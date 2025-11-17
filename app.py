@@ -24,7 +24,7 @@ SEARCH_KEYWORDS = [
 # sirf isi sender se aaya email valid maana jayega
 ALLOWED_FROM = [
     s.strip().lower()
-    for s in os.getenv("ALLOWED_FROM", "no-reply@paytm.com","rajankbihar123@gmail.com").split(",")
+    for s in os.getenv("ALLOWED_FROM", "no-reply@paytm.com,rajankbihar123@gmail.com").split(",")
 ]
 
 app = Flask(__name__)
@@ -207,3 +207,4 @@ def health():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
