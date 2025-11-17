@@ -21,10 +21,10 @@ SEARCH_KEYWORDS = [
     ).split(",")
 ]
 
-# sirf isi sender se aaya email valid maana jayega
+# sirf inhi senders se aaya mail valid hoga
 ALLOWED_FROM = [
     s.strip().lower()
-    for s in os.getenv("ALLOWED_FROM", "no-reply@paytm.com,rajankbihar123@gmail.com").split(",")
+    for s in os.getenv("ALLOWED_FROM", "no-reply@paytm.com").split(",")
 ]
 
 app = Flask(__name__)
@@ -33,7 +33,7 @@ app = Flask(__name__)
 # ---------- HELPERS ----------
 
 def parse_amount(text: str):
-    """Amount detect kare: ₹ 1, Rs. 1.00, INR 150"""
+    """Amount detect kare: ₹ 5, Rs. 5.00, INR 5"""
     patterns = [
         r"₹\s*([0-9,]+\.?\d*)",
         r"rs\.?\s*([0-9,]+\.?\d*)",
@@ -48,12 +48,21 @@ def parse_amount(text: str):
 
 def parse_sender(text: str):
     """Sender / VPA detect kare"""
-    # vpa: abc@upi
     m = re.search(r"vpa[:\s]+([a-z0-9@._-]+)", text, re.IGNORECASE)
     if m:
         return m.group(1).strip()
-    # from xyz
     m = re.search(r"from\s+([a-z0-9 @._\-]+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def parse_order_id(text: str):
+    """
+    Order ID detect kare:
+    'Order ID: T2511172214347118346964'
+    """
+    m = re.search(r"order id[:\s]+([a-z0-9]+)", text, re.IGNORECASE)
     if m:
         return m.group(1).strip()
     return None
@@ -69,10 +78,15 @@ def connect_imap():
 
 
 def fetch_transaction(tx_id: str):
-    """Gmail se given transaction/order ID ke liye payment email dhundho"""
+    """
+    Sirf tab match karega jab:
+    - sender allowed ho (no-reply@paytm.com)
+    - email payment-type ho (keywords)
+    - email ke andar 'Order ID:' line mile
+    - us line ka ID exactly tx_id ke barabar ho
+    """
     mail = connect_imap()
 
-    # subject+body sab me tx_id search
     status, messages = mail.search(None, f'TEXT "{tx_id}"')
     if status != "OK":
         mail.logout()
@@ -84,22 +98,20 @@ def fetch_transaction(tx_id: str):
         _, msg_data = mail.fetch(msg_id, "(RFC822)")
         msg = email.message_from_bytes(msg_data[0][1])
 
-        # FROM header check – yahin se fake email filter hoga
+        # ----- sender check (fake email filter) -----
         from_header = msg.get("From", "") or ""
         from_lower = from_header.lower()
-
-        # agar allowed list me se koi email "From" me nahi mila -> skip
         if not any(allowed in from_lower for allowed in ALLOWED_FROM):
-            # print(f"Skip: invalid sender {from_header}")
-            continue
+            continue  # not Paytm → skip
 
-        # subject decode
+        # ----- subject -----
         subject_raw, encoding = decode_header(msg.get("Subject"))[0]
         if isinstance(subject_raw, bytes):
             subject = subject_raw.decode(encoding or "utf-8", errors="ignore")
         else:
             subject = subject_raw or ""
 
+        # ----- body -----
         body = ""
         if msg.is_multipart():
             for part in msg.walk():
@@ -113,23 +125,31 @@ def fetch_transaction(tx_id: str):
             if body_bytes:
                 body += body_bytes.decode("utf-8", errors="ignore")
 
-        combined = (subject + "\n" + body).lower()
+        combined = subject + "\n" + body
+        combined_lower = combined.lower()
 
-        # payment-type email hona chahiye
-        if not any(k in combined for k in SEARCH_KEYWORDS):
+        # ----- payment-type email check -----
+        if not any(k in combined_lower for k in SEARCH_KEYWORDS):
             continue
 
-        # tx_id present hona chahiye
-        if tx_id.lower() not in combined:
-            continue
+        # ----- ORDER ID MUST MATCH -----
+        order_id_in_mail = parse_order_id(combined_lower)
+        if not order_id_in_mail:
+            continue  # koi order id hi nahi → skip
 
-        amount = parse_amount(combined)
-        sender = parse_sender(combined)
+        # yahan main condition: order id == tx_id
+        if order_id_in_mail.lower() != tx_id.lower():
+            continue  # amount ya kuch aur match hua hoga → skip
+
+        # ----- ab safe hai: amount/time/sender nikaalo -----
+        amount = parse_amount(combined_lower)
+        sender = parse_sender(combined_lower)
         email_time = msg.get("Date", "")
 
         mail.logout()
         return {
             "tx_id": tx_id,
+            "order_id": order_id_in_mail,
             "amount": amount,
             "sender": sender,
             "subject": subject,
@@ -166,8 +186,8 @@ def get_tx_id_from_query():
 def trx_api():
     """
     Example:
-      /trx?tx_id=YOUR_TX_ID
-      /trx?transection_id=YOUR_TX_ID
+      /trx?tx_id=ORDER_ID
+      /trx?transection_id=ORDER_ID
     """
     tx_id = get_tx_id_from_query()
 
@@ -176,7 +196,7 @@ def trx_api():
             jsonify(
                 {
                     "ok": False,
-                    "error": "Missing tx_id. Use /trx?tx_id=...",
+                    "error": "Missing tx_id. Use /trx?tx_id=ORDER_ID",
                 }
             ),
             400,
@@ -192,7 +212,7 @@ def trx_api():
             {
                 "ok": True,
                 "found": False,
-                "message": "No *valid* Paytm payment email found for this ID.",
+                "message": "No valid Paytm payment email found for this Order ID.",
             }
         )
 
@@ -207,4 +227,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
-
