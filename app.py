@@ -21,6 +21,12 @@ SEARCH_KEYWORDS = [
     ).split(",")
 ]
 
+# sirf isi sender se aaya email valid maana jayega
+ALLOWED_FROM = [
+    s.strip().lower()
+    for s in os.getenv("ALLOWED_FROM", "no-reply@paytm.com","rajankbihar123@gmail.com").split(",")
+]
+
 app = Flask(__name__)
 
 
@@ -78,6 +84,15 @@ def fetch_transaction(tx_id: str):
         _, msg_data = mail.fetch(msg_id, "(RFC822)")
         msg = email.message_from_bytes(msg_data[0][1])
 
+        # FROM header check – yahin se fake email filter hoga
+        from_header = msg.get("From", "") or ""
+        from_lower = from_header.lower()
+
+        # agar allowed list me se koi email "From" me nahi mila -> skip
+        if not any(allowed in from_lower for allowed in ALLOWED_FROM):
+            # print(f"Skip: invalid sender {from_header}")
+            continue
+
         # subject decode
         subject_raw, encoding = decode_header(msg.get("Subject"))[0]
         if isinstance(subject_raw, bytes):
@@ -119,6 +134,7 @@ def fetch_transaction(tx_id: str):
             "sender": sender,
             "subject": subject,
             "time": email_time,
+            "from": from_header,
         }
 
     mail.logout()
@@ -176,7 +192,7 @@ def trx_api():
             {
                 "ok": True,
                 "found": False,
-                "message": "No payment email found for this ID.",
+                "message": "No *valid* Paytm payment email found for this ID.",
             }
         )
 
@@ -185,7 +201,7 @@ def trx_api():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "allowed_from": ALLOWED_FROM}
 
 
 if __name__ == "__main__":
