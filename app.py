@@ -21,7 +21,7 @@ SEARCH_KEYWORDS = [
     ).split(",")
 ]
 
-# sirf inhi senders se aaya mail valid hoga
+# sirf in senders se aaya mail valid hoga
 ALLOWED_FROM = [
     s.strip().lower()
     for s in os.getenv("ALLOWED_FROM", "no-reply@paytm.com").split(",")
@@ -46,14 +46,32 @@ def parse_amount(text: str):
     return None
 
 
-def parse_sender(text: str):
-    """Sender / VPA detect kare"""
-    m = re.search(r"vpa[:\s]+([a-z0-9@._-]+)", text, re.IGNORECASE)
+def parse_sender(body: str):
+    """
+    Sender (VPA / UPI ID) nikalne ke liye powerful parser.
+    Paytm, PhonePe, GPay wagairah ke formats handle karega.
+    """
+
+    # Format 1: direct UPI ID (most common) xyz@upi / xyz@ybl / xyz@phonepe
+    m = re.search(r"\b([a-z0-9._-]+@[a-z]{2,15})\b", body, re.IGNORECASE)
     if m:
         return m.group(1).strip()
-    m = re.search(r"from\s+([a-z0-9 @._\-]+)", text, re.IGNORECASE)
+
+    # Format 2: "BHIM UPI xyz@upi"
+    m = re.search(r"bhim\s+upi\s+([a-z0-9._-]+@[a-z]{2,15})", body, re.IGNORECASE)
     if m:
         return m.group(1).strip()
+
+    # Format 3: "VPA: xyz@okaxis"
+    m = re.search(r"vpa[:\s]+([a-z0-9._-]+@[a-z]{2,15})", body, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Format 4: "From xyz@okaxis"
+    m = re.search(r"from[:\s]+([a-z0-9._-]+@[a-z]{2,15})", body, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
     return None
 
 
@@ -80,13 +98,14 @@ def connect_imap():
 def fetch_transaction(tx_id: str):
     """
     Sirf tab match karega jab:
-    - sender allowed ho (no-reply@paytm.com)
-    - email payment-type ho (keywords)
+    - sender allowed ho (ALLOWED_FROM me ho)
+    - email payment-type ho (SEARCH_KEYWORDS)
     - email ke andar 'Order ID:' line mile
     - us line ka ID exactly tx_id ke barabar ho
     """
     mail = connect_imap()
 
+    # subject+body sab me tx_id search
     status, messages = mail.search(None, f'TEXT "{tx_id}"')
     if status != "OK":
         mail.logout()
